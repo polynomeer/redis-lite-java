@@ -7,9 +7,6 @@ import org.luaj.vm2.*;
 import org.luaj.vm2.compiler.LuaC;
 import org.luaj.vm2.lib.*;
 
-import java.io.IOException;
-import java.io.InputStream;
-
 /**
  * Lua sandbox powered by luaj:
  * - Minimal libs: base, table, string, math (no io/os)
@@ -29,8 +26,7 @@ public final class LuaEngine {
     private final int maxBytes;    // total bytes across args to redis.call
     private final int maxCalls;    // total redis.call invocations per script
 
-    // Script cache: sha1 -> loaded chunk (LuaFunction)
-    private final java.util.Map<String, LuaFunction> cache = new java.util.HashMap<>();
+    private final java.util.Map<String, String> cache = new java.util.HashMap<>();
 
     public LuaEngine(Db db, PubSubBroker broker, long timeLimitMs, int maxBytes, int maxCalls) {
         this.db = db;
@@ -42,19 +38,19 @@ public final class LuaEngine {
 
     public LuaValue eval(String script, java.util.List<String> keys, java.util.List<String> args) {
         String sha = Sha1.hex(script);
-        LuaFunction fn = cache.computeIfAbsent(sha, s -> compile(script));
-        return run(fn, keys, args);
+        cache.putIfAbsent(sha.toLowerCase(), script);
+        return run(script, keys, args); // compile on current Globals
     }
 
     public LuaValue evalSha(String sha, java.util.List<String> keys, java.util.List<String> args) {
-        LuaFunction fn = cache.get(sha.toLowerCase());
-        if (fn == null) throw new NoScript();
-        return run(fn, keys, args);
+        String src = cache.get(sha.toLowerCase());
+        if (src == null) throw new NoScript();
+        return run(src, keys, args);
     }
 
     public String scriptLoad(String script) {
         String sha = Sha1.hex(script);
-        cache.computeIfAbsent(sha, s -> compile(script));
+        cache.putIfAbsent(sha.toLowerCase(), script);
         return sha;
     }
 
@@ -66,51 +62,34 @@ public final class LuaEngine {
         cache.clear();
     }
 
-    // ---- internals ----
-
-    private LuaFunction compile(String script) {
+    private LuaValue run(String script, java.util.List<String> keys, java.util.List<String> args) {
         Globals g = makeGlobals();
 
-        // Check if the script starts with a slash (assume it is a file path if so)
-        if (script.startsWith("/")) {
-            // Try to load bytecode from the classpath
-            InputStream bytecodeStream = getClass().getResourceAsStream(script);
-            if (bytecodeStream == null) {
-                throw new RuntimeException("Could not find Lua bytecode for script: " + script +
-                        ". Ensure the file exists in 'src/main/resources'" +
-                        " and the path is correctly specified.");
-            }
-            // Load the Lua bytecode
-            return (LuaFunction) g.load(bytecodeStream, "script", "b", g);
-        } else {
-            // Treat the script as raw Lua code if it does not start with a slash
-            return (LuaFunction) g.load(script, "script", g);
-        }
-    }
-
-    private LuaValue run(LuaFunction fn, java.util.List<String> keys, java.util.List<String> args) {
-        Globals g = makeGlobals();
-
-        // KEYS and ARGV as standard arrays (1-based)
+        // KEYS / ARGV
         LuaTable KEYS = new LuaTable();
-        for (int i = 0; i < keys.size(); i++) KEYS.rawset(i + 1, LuaValue.valueOf(keys.get(i)));
-        LuaTable ARGV = new LuaTable();
-        for (int i = 0; i < args.size(); i++) ARGV.rawset(i + 1, LuaValue.valueOf(args.get(i)));
+        for (int i = 0; i < keys.size(); i++) KEYS.set(i + 1, LuaValue.valueOf(keys.get(i)));
         g.set("KEYS", KEYS);
+
+        LuaTable ARGV = new LuaTable();
+        for (int i = 0; i < args.size(); i++) ARGV.set(i + 1, LuaValue.valueOf(args.get(i)));
         g.set("ARGV", ARGV);
 
-        // Cooperative limits context
+        // redis.call / redis.pcall
         Limits limits = new Limits(System.currentTimeMillis(), timeLimitMs, maxBytes, maxCalls);
-
-        // redis table with 'call' and 'pcall'
         LuaTable redis = new LuaTable();
         redis.set("call", new RedisCall(limits));
         redis.set("pcall", new RedisPCall(limits));
         g.set("redis", redis);
 
-        // Call chunk: returns a LuaValue (any type)
-        return fn.invoke(LuaValue.NONE).arg1();
+        try {
+            // ✅ load chunk in THIS Globals and get a function
+            LuaFunction fn = g.load(script, "script").checkfunction();
+            return fn.invoke(LuaValue.NONE).arg1();
+        } catch (LuaError e) {
+            throw new RuntimeException("Lua script execution failed: " + e.getMessage(), e);
+        }
     }
+
 
     private Globals makeGlobals() {
         Globals g = new Globals();
@@ -167,15 +146,22 @@ public final class LuaEngine {
 
         @Override
         public Varargs invoke(Varargs va) {
+            // Convert Lua arguments to a Java list
             java.util.List<String> argv = toArgv(va);
+            System.out.println("DEBUG redis.call arguments: " + argv);
+
+            // Apply resource limits
             lim.tick(argv);
+
+            // Extract and execute the command
             String cmd = argv.get(0).toUpperCase();
+            System.out.println("DEBUG redis.call executing command: " + cmd);
 
             switch (cmd) {
                 case "GET":
                     return v(get1(argv));
                 case "SET":
-                    return v(set(argv));               // "OK" or nil
+                    return v(set(argv));
                 case "DEL":
                     return LuaValue.valueOf(del(argv));
                 case "EXISTS":
@@ -184,8 +170,6 @@ public final class LuaEngine {
                     return v(hget(argv));
                 case "HSET":
                     return LuaValue.valueOf(hset(argv));
-                case "HDEL":
-                    return LuaValue.valueOf(hdel(argv));
                 case "PEXPIRE":
                     return LuaValue.valueOf(pexpire(argv));
                 case "PTTL":
@@ -193,7 +177,8 @@ public final class LuaEngine {
                 case "PUBLISH":
                     return LuaValue.valueOf(publish(argv));
                 default:
-                    throw new RuntimeException("unsupported command in redis.call: " + cmd);
+                    // Throw meaningful error for unsupported commands
+                    throw new RuntimeException("Unsupported redis.call command: " + cmd);
             }
         }
 
@@ -297,17 +282,20 @@ public final class LuaEngine {
             return v;
         }
 
-        private Varargs v(String s) {
-            return (s == null) ? LuaValue.NIL : LuaValue.valueOf(s);
-        }
 
+        // Helper function to convert Lua values to Java strings
         private java.util.List<String> toArgv(Varargs va) {
             int n = va.narg();
-            if (n < 1) throw new RuntimeException("wrong number of arguments for 'redis.call'");
             java.util.List<String> out = new java.util.ArrayList<>(n);
             for (int i = 1; i <= n; i++) out.add(va.arg(i).tojstring());
             return out;
         }
+
+        // Debug helper for null-safe return
+        private LuaValue v(String s) {
+            return (s == null) ? LuaValue.NIL : LuaValue.valueOf(s);
+        }
+
     }
 
     // redis.pcall(...) -> like call but returns ('err') as lua error string instead of throwing
