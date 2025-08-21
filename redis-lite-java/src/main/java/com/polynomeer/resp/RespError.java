@@ -1,4 +1,10 @@
 package com.polynomeer.resp;
 
-public class RespError {
+/**
+ * Lightweight exception for RESP parsing/writing errors.
+ */
+public class RespError extends RuntimeException {
+    public RespError(String msg) {
+        super(msg);
+    }
 }
