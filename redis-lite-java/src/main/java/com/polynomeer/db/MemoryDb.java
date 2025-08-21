@@ -62,7 +62,6 @@ public class MemoryDb implements Db {
         while (n < limit) {
             ExpiryHeap.Node top = heap.peek();
             if (top == null || top.expireAtMs > nowMs) break;
-
             heap.pop();
             Record r = map.get(top.key);
             if (r == null) continue; // already gone
@@ -102,9 +101,7 @@ public class MemoryDb implements Db {
     public int hset(String key, String field, String value) throws WrongTypeException {
         Record r = map.get(key);
         long now = System.currentTimeMillis();
-
         if (r == null || isExpired(r, now)) {
-            // Create new hash record without TTL by default
             OpenHashStringMap m = new OpenHashStringMap();
             r = new Record(m, -1);
             map.put(key, r);
@@ -112,7 +109,6 @@ public class MemoryDb implements Db {
             throw new WrongTypeException();
         }
         boolean isNew = r.hashVal.put(field, value);
-        // TTL unchanged (as in Redis)
         return isNew ? 1 : 0;
     }
 
@@ -138,7 +134,37 @@ public class MemoryDb implements Db {
         return removed;
     }
 
-    // ---------- helpers ----------
+    // ----- TTL helpers -----
+
+    @Override
+    public int pexpire(String key, long ms) {
+        Record r = map.get(key);
+        long now = System.currentTimeMillis();
+        if (r == null || isExpired(r, now)) {
+            map.remove(key);
+            return 0;
+        }
+        if (ms <= 0) {
+            map.remove(key);
+            return 1;
+        }
+        r.expireAtMs = now + ms;
+        heap.push(key, r.expireAtMs);
+        return 1;
+    }
+
+    @Override
+    public long pttl(String key) {
+        Record r = map.get(key);
+        long now = System.currentTimeMillis();
+        if (r == null || isExpired(r, now)) {
+            map.remove(key);
+            return -2;
+        }
+        if (!r.hasTtl()) return -1;
+        long rem = r.expireAtMs - now;
+        return rem < 0 ? 0 : rem;
+    }
 
     private boolean isExpired(Record r, long nowMs) {
         return r.hasTtl() && r.expireAtMs <= nowMs;

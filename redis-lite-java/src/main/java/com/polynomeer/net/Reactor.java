@@ -3,6 +3,7 @@ package com.polynomeer.net;
 import com.polynomeer.cmd.CommandRegistry;
 import com.polynomeer.db.Db;
 import com.polynomeer.db.MemoryDb;
+import com.polynomeer.lua.LuaEngine;
 import com.polynomeer.pubsub.PubSubBroker;
 import com.polynomeer.util.Clocks;
 
@@ -14,25 +15,23 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 
-/**
- * Single-threaded Reactor using Selector.
- * Integrates with in-memory DB and TTL expiration scheduling + Pub/Sub broker.
- */
 public class Reactor {
     private final int port;
     private Selector selector;
     private ServerSocketChannel server;
     private final Db db;
     private final PubSubBroker broker;
+    private final LuaEngine lua;
 
-    // Expiration batch limit per loop to avoid long stalls
     private static final int EXPIRE_BATCH_LIMIT = 2000;
 
     public Reactor(int port) {
         this.port = port;
         this.db = new MemoryDb(); // single DB (DB 0)
         this.broker = new PubSubBroker();
-        CommandRegistry.initDefaults(db, broker); // register commands against this DB & broker
+        // Lua sandbox limits: 5_000 ms, max 10_000 redis.call bytes, max 1_000 calls
+        this.lua = new LuaEngine(db, broker, 5_000L, 10_000, 1_000);
+        CommandRegistry.initDefaults(db, broker, lua);
     }
 
     public void start() throws IOException {
@@ -46,7 +45,6 @@ public class Reactor {
         System.out.println("[jredis] Listening on port " + port);
 
         while (true) {
-            // Compute select timeout based on nearest key expiration.
             long nowMs = Clocks.monoMillis();
             long delayMs = db.nextExpiryDelayMillis(nowMs);
             if (delayMs < 0) delayMs = 1000; // no expirations known
@@ -57,7 +55,6 @@ public class Reactor {
             while (it.hasNext()) {
                 SelectionKey key = it.next();
                 it.remove();
-
                 if (!key.isValid()) continue;
 
                 try {
@@ -78,7 +75,6 @@ public class Reactor {
                 }
             }
 
-            // Run expiration after handling IO to keep latency low
             nowMs = Clocks.monoMillis();
             db.expireDue(nowMs, EXPIRE_BATCH_LIMIT);
         }

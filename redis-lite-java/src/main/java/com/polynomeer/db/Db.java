@@ -64,4 +64,14 @@ public interface Db {
      * Throws WrongTypeException if key holds a non-hash value.
      */
     int hdel(String key, List<String> fields) throws WrongTypeException;
+
+    /**
+     * Set absolute TTL: now + ms (ms>0), returns 1 if updated or key deleted when ms<=0, 0 if key missing.
+     */
+    int pexpire(String key, long ms);
+
+    /**
+     * Remaining TTL in ms: -2 if key doesn't exist, -1 if no TTL, else >=0.
+     */
+    long pttl(String key);
 }

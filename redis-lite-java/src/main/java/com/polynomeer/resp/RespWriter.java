@@ -126,4 +126,54 @@ public class RespWriter {
         buf.flip();
         return buf;
     }
+
+    /**
+     * RESP Array of integers.
+     */
+    public static ByteBuffer arrayOfIntegers(int[] values) {
+        int cap = headerLen(values.length);
+        for (int v : values) cap += 1 + digits(v) + 2; // :v\r\n
+        ByteBuffer buf = ByteBuffer.allocate(cap);
+        writeHeader(buf, values.length);
+        for (int v : values) {
+            byte[] b = Integer.toString(v).getBytes(StandardCharsets.UTF_8);
+            buf.put((byte) ':').put(b).put((byte) '\r').put((byte) '\n');
+        }
+        buf.flip();
+        return buf;
+    }
+
+    /**
+     * RESP Array of bulk strings.
+     */
+    public static ByteBuffer arrayOfBulkStrings(String[] vals) {
+        int cap = headerLen(vals.length);
+        for (String s : vals) {
+            byte[] b = s.getBytes(StandardCharsets.UTF_8);
+            byte[] len = Integer.toString(b.length).getBytes(StandardCharsets.UTF_8);
+            cap += 1 + len.length + 2 + b.length + 2;
+        }
+        ByteBuffer buf = ByteBuffer.allocate(cap);
+        writeHeader(buf, vals.length);
+        for (String s : vals) {
+            byte[] b = s.getBytes(StandardCharsets.UTF_8);
+            byte[] len = Integer.toString(b.length).getBytes(StandardCharsets.UTF_8);
+            buf.put((byte) '$').put(len).put((byte) '\r').put((byte) '\n');
+            buf.put(b).put((byte) '\r').put((byte) '\n');
+        }
+        buf.flip();
+        return buf;
+    }
+
+    private static int headerLen(int n) {
+        return 1 + digits(n) + 2;
+    } // *N\r\n
+
+    private static void writeHeader(ByteBuffer buf, int n) {
+        buf.put((byte) '*').put(Integer.toString(n).getBytes(StandardCharsets.UTF_8)).put((byte) '\r').put((byte) '\n');
+    }
+
+    private static int digits(int n) {
+        return Integer.toString(n).length();
+    }
 }
