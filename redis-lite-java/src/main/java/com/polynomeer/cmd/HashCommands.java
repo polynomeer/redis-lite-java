@@ -9,23 +9,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Hash commands:
- * - HSET key field value [field value ...] -> :<fields-added>
- * - HGET key field                         -> $bulk or $-1
- * - HDEL key field [field ...]             -> :<fields-removed>
- * <p>
- * Notes:
- * - This step focuses on core semantics; advanced flags/variants are omitted.
- */
 public final class HashCommands {
     private HashCommands() {
     }
 
     public static void register(Map<String, Command> reg, Db db) {
-        reg.put("HSET", argv -> hset(db, argv));
-        reg.put("HGET", argv -> hget(db, argv));
-        reg.put("HDEL", argv -> hdel(db, argv));
+        reg.put("HSET", (argv, ctx) -> hset(db, argv));
+        reg.put("HGET", (argv, ctx) -> hget(db, argv));
+        reg.put("HDEL", (argv, ctx) -> hdel(db, argv));
     }
 
     private static ByteBuffer hset(Db db, List<String> argv) {

@@ -8,24 +8,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/**
- * String commands backed by in-memory DB with millisecond TTL:
- * - GET key              -> bulk or $-1
- * - SET key value [PX ms|EX sec] [NX|XX]  -> +OK or $-1 (nil) when condition fails
- * - DEL key [...]        -> :<num-deleted>
- * <p>
- * Notes:
- * - Only a subset of SET options is implemented for now: PX/EX, NX, XX.
- * - GET option of SET and other flags (KEEPTTL) are omitted in this step.
- */
 public final class StringCommands {
     private StringCommands() {
     }
 
     public static void register(Map<String, Command> reg, Db db) {
-        reg.put("GET", argv -> get(db, argv));
-        reg.put("SET", argv -> set(db, argv));
-        reg.put("DEL", argv -> del(db, argv));
+        reg.put("GET", (argv, ctx) -> get(db, argv));
+        reg.put("SET", (argv, ctx) -> set(db, argv));
+        reg.put("DEL", (argv, ctx) -> del(db, argv));
     }
 
     private static ByteBuffer get(Db db, List<String> argv) {
@@ -41,7 +31,6 @@ public final class StringCommands {
         String key = argv.get(1);
         String value = argv.get(2);
 
-        // Parse options: [PX ms|EX sec] [NX|XX]
         boolean nx = false, xx = false;
         Long pxMs = null;
 
@@ -72,13 +61,8 @@ public final class StringCommands {
         if (nx && xx) return RespWriter.error("ERR NX and XX options at the same time are not compatible");
 
         boolean exists = db.exists(key);
-        if (nx && exists) {
-            // Condition not met -> nil (like Redis)
-            return RespWriter.nullBulk();
-        }
-        if (xx && !exists) {
-            return RespWriter.nullBulk();
-        }
+        if (nx && exists) return RespWriter.nullBulk();
+        if (xx && !exists) return RespWriter.nullBulk();
 
         long expireAt = (pxMs == null) ? -1L : (System.currentTimeMillis() + pxMs);
         db.setString(key, value, expireAt);

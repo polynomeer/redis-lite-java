@@ -1,6 +1,7 @@
 package com.polynomeer.net;
 
 import com.polynomeer.cmd.CommandRegistry;
+import com.polynomeer.pubsub.PubSubBroker;
 import com.polynomeer.resp.RespReader;
 
 import java.io.IOException;
@@ -8,29 +9,33 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.List;
+import java.util.*;
 
 /**
- * Per-connection state: read buffer, write queue, parsing cursor.
- * - OP_READ: accumulate bytes, parse RESP requests (pipelined)
- * - Execute command via CommandRegistry and enqueue RESP response
- * - OP_WRITE: flush write queue with partial write handling
+ * Per-connection state:
+ * - read buffer, write queue, parsing cursor
+ * - subscription set for Pub/Sub
+ * OP_READ: parse RESP command frames (pipelined) → dispatch → enqueue replies
+ * OP_WRITE: flush write queue (partial writes)
  */
 public class ClientConn {
     private static final int READ_BUF_SIZE = 64 * 1024;
 
     private final SocketChannel ch;
     private final Selector selector;
+    private final PubSubBroker broker;
 
     private final ByteBuffer readBuf = ByteBuffer.allocate(READ_BUF_SIZE);
     private final Deque<ByteBuffer> writeQueue = new ArrayDeque<>();
     private final RespReader respReader = new RespReader();
 
-    public ClientConn(SocketChannel ch, Selector selector) {
+    // The set of channels this connection subscribed to
+    private final Set<String> subscriptions = new HashSet<>();
+
+    public ClientConn(SocketChannel ch, Selector selector, PubSubBroker broker) {
         this.ch = ch;
         this.selector = selector;
+        this.broker = broker;
     }
 
     /**
@@ -39,32 +44,29 @@ public class ClientConn {
     public void handleRead() throws IOException {
         int n = ch.read(readBuf);
         if (n == -1) {
+            onDisconnect();
             closeQuietly();
             return;
         }
         if (n == 0) return;
 
-        readBuf.flip(); // switch to read mode for parser
+        readBuf.flip();
 
-        // Parse as many RESP command frames as available (pipelining)
         while (true) {
             int markPos = readBuf.position();
             List<String> argv = respReader.tryReadCommand(readBuf);
             if (argv == null) {
-                // Not enough bytes for a full frame → rewind and stop
                 readBuf.position(markPos);
                 break;
             }
-
-            // Dispatch registered commands (PING/ECHO/GET/SET/DEL)
-            ByteBuffer resp = CommandRegistry.dispatch(argv);
-            enqueue(resp);
+            ByteBuffer resp = CommandRegistry.dispatch(argv, this);
+            if (resp != null) {
+                enqueue(resp);
+            }
         }
 
-        // Compact buffer to keep any unconsumed bytes at beginning
         readBuf.compact();
 
-        // Ensure OP_WRITE is enabled if we have pending data
         if (!writeQueue.isEmpty()) {
             SelectionKey key = ch.keyFor(selector);
             if (key != null && key.isValid()) {
@@ -81,13 +83,10 @@ public class ClientConn {
             ByteBuffer buf = writeQueue.peekFirst();
             ch.write(buf);
             if (buf.hasRemaining()) {
-                // Kernel buffer full: wait for next OP_WRITE
                 break;
             }
             writeQueue.pollFirst();
         }
-
-        // If nothing left to write, disable OP_WRITE to avoid busy-loop
         if (writeQueue.isEmpty()) {
             SelectionKey key = ch.keyFor(selector);
             if (key != null && key.isValid()) {
@@ -96,8 +95,18 @@ public class ClientConn {
         }
     }
 
+    /**
+     * Enqueue a server-pushed message (e.g., Pub/Sub) and ensure OP_WRITE is enabled.
+     */
+    public void push(ByteBuffer response) {
+        enqueue(response);
+        SelectionKey key = ch.keyFor(selector);
+        if (key != null && key.isValid()) {
+            key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+        }
+    }
+
     private void enqueue(ByteBuffer response) {
-        // Response ByteBuffer must be in read mode (position = 0)
         writeQueue.addLast(response);
     }
 
@@ -106,5 +115,29 @@ public class ClientConn {
             ch.close();
         } catch (Exception ignore) {
         }
+    }
+
+    /**
+     * On disconnect, unsubscribe from all channels.
+     */
+    public void onDisconnect() {
+        if (!subscriptions.isEmpty()) {
+            broker.unsubscribeAll(this, subscriptions);
+            subscriptions.clear();
+        }
+    }
+
+    // ---- subscription helpers (used by commands/broker) ----
+
+    public void addSubscription(String channel) {
+        subscriptions.add(channel);
+    }
+
+    public boolean removeSubscription(String channel) {
+        return subscriptions.remove(channel);
+    }
+
+    public int subscriptionCount() {
+        return subscriptions.size();
     }
 }
