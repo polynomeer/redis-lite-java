@@ -61,27 +61,25 @@ public class RespWriter {
         byte[] B = b.getBytes(StandardCharsets.UTF_8);
         byte[] Ci = Long.toString(c).getBytes(StandardCharsets.UTF_8);
 
-        // *3\r\n + $lenA\r\nA\r\n + $lenB\r\nB\r\n + :Ci\r\n
         byte[] lenA = Integer.toString(A.length).getBytes(StandardCharsets.UTF_8);
         byte[] lenB = Integer.toString(B.length).getBytes(StandardCharsets.UTF_8);
 
-        int cap = 3 + // *3\r\n
-                1 + lenA.length + 2 + A.length + 2 +
-                1 + lenB.length + 2 + B.length + 2 +
-                1 + Ci.length + 2;
+        // "*3\r\n" is 4 bytes (NOT 3)
+        int cap = 4
+                + (1 + lenA.length + 2) + (A.length + 2)   // $lenA\r\n + A\r\n
+                + (1 + lenB.length + 2) + (B.length + 2)   // $lenB\r\n + B\r\n
+                + (1 + Ci.length + 2);                     // :Ci\r\n
+
         ByteBuffer buf = ByteBuffer.allocate(cap);
 
         buf.put((byte) '*').put((byte) '3').put((byte) '\r').put((byte) '\n');
 
-        // $lenA\r\nA\r\n
         buf.put((byte) '$').put(lenA).put((byte) '\r').put((byte) '\n');
         buf.put(A).put((byte) '\r').put((byte) '\n');
 
-        // $lenB\r\nB\r\n
         buf.put((byte) '$').put(lenB).put((byte) '\r').put((byte) '\n');
         buf.put(B).put((byte) '\r').put((byte) '\n');
 
-        // :Ci\r\n
         buf.put((byte) ':').put(Ci).put((byte) '\r').put((byte) '\n');
 
         buf.flip();
@@ -96,7 +94,7 @@ public class RespWriter {
     }
 
     /**
-     * RESP Array of 3 bulk strings.
+     * RESP Array of 3 bulk strings. (used for ["message", channel, payload])
      */
     public static ByteBuffer arrayBulk3(String a, String b, String c) {
         byte[] A = a.getBytes(StandardCharsets.UTF_8);
@@ -107,10 +105,11 @@ public class RespWriter {
         byte[] lenB = Integer.toString(B.length).getBytes(StandardCharsets.UTF_8);
         byte[] lenC = Integer.toString(C.length).getBytes(StandardCharsets.UTF_8);
 
-        int cap = 3 + // *3\r\n
-                1 + lenA.length + 2 + A.length + 2 +
-                1 + lenB.length + 2 + B.length + 2 +
-                1 + lenC.length + 2 + C.length + 2;
+        // "*3\r\n" is 4 bytes
+        int cap = 4
+                + (1 + lenA.length + 2) + (A.length + 2)
+                + (1 + lenB.length + 2) + (B.length + 2)
+                + (1 + lenC.length + 2) + (C.length + 2);
 
         ByteBuffer buf = ByteBuffer.allocate(cap);
         buf.put((byte) '*').put((byte) '3').put((byte) '\r').put((byte) '\n');
