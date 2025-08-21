@@ -1,6 +1,6 @@
 package com.polynomeer.net;
 
-import com.polynomeer.cmd.PingEchoCommands;
+import com.polynomeer.cmd.CommandRegistry;
 import com.polynomeer.resp.RespReader;
 
 import java.io.IOException;
@@ -15,7 +15,7 @@ import java.util.List;
 /**
  * Per-connection state: read buffer, write queue, parsing cursor.
  * - OP_READ: accumulate bytes, parse RESP requests (pipelined)
- * - Execute command (PING/ECHO stub) and enqueue RESP response
+ * - Execute command via CommandRegistry and enqueue RESP response
  * - OP_WRITE: flush write queue with partial write handling
  */
 public class ClientConn {
@@ -26,7 +26,6 @@ public class ClientConn {
 
     private final ByteBuffer readBuf = ByteBuffer.allocate(READ_BUF_SIZE);
     private final Deque<ByteBuffer> writeQueue = new ArrayDeque<>();
-
     private final RespReader respReader = new RespReader();
 
     public ClientConn(SocketChannel ch, Selector selector) {
@@ -47,7 +46,7 @@ public class ClientConn {
 
         readBuf.flip(); // switch to read mode for parser
 
-        // Parse as many RESP Array(Bulk Strings) as available (pipelining)
+        // Parse as many RESP command frames as available (pipelining)
         while (true) {
             int markPos = readBuf.position();
             List<String> argv = respReader.tryReadCommand(readBuf);
@@ -57,8 +56,8 @@ public class ClientConn {
                 break;
             }
 
-            // Dispatch minimal commands (PING/ECHO); unknown → -ERR
-            ByteBuffer resp = PingEchoCommands.dispatch(argv);
+            // Dispatch registered commands (PING/ECHO/GET/SET/DEL)
+            ByteBuffer resp = CommandRegistry.dispatch(argv);
             enqueue(resp);
         }
 
@@ -98,7 +97,7 @@ public class ClientConn {
     }
 
     private void enqueue(ByteBuffer response) {
-        // Response ByteBuffer must be in read mode (position at 0)
+        // Response ByteBuffer must be in read mode (position = 0)
         writeQueue.addLast(response);
     }
 
