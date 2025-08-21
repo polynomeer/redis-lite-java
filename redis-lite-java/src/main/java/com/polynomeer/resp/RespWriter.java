@@ -2,6 +2,7 @@ package com.polynomeer.resp;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Minimal RESP writer helpers.
@@ -171,6 +172,25 @@ public class RespWriter {
 
     private static void writeHeader(ByteBuffer buf, int n) {
         buf.put((byte) '*').put(Integer.toString(n).getBytes(StandardCharsets.UTF_8)).put((byte) '\r').put((byte) '\n');
+    }
+
+    /**
+     * Build RESP Array whose elements are already-encoded RESP frames.
+     */
+    public static ByteBuffer arrayOfFrames(List<ByteBuffer> frames) {
+        int n = frames.size();
+        int cap = 1 + digits(n) + 2; // *n\r\n
+        for (ByteBuffer f : frames) cap += f.remaining();
+        ByteBuffer buf = ByteBuffer.allocate(cap);
+        buf.put((byte) '*').put(Integer.toString(n).getBytes(StandardCharsets.UTF_8))
+                .put((byte) '\r').put((byte) '\n');
+        for (ByteBuffer f : frames) {
+            ByteBuffer dup = f.asReadOnlyBuffer();
+            dup.rewind();
+            buf.put(dup);
+        }
+        buf.flip();
+        return buf;
     }
 
     private static int digits(int n) {

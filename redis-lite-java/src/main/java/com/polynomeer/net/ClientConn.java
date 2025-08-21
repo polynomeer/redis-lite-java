@@ -14,9 +14,8 @@ import java.util.*;
 /**
  * Per-connection state:
  * - read buffer, write queue, parsing cursor
- * - subscription set for Pub/Sub
- * OP_READ: parse RESP command frames (pipelined) → dispatch → enqueue replies
- * OP_WRITE: flush write queue (partial writes)
+ * - Pub/Sub subscription set
+ * - Transaction state (MULTI/EXEC/DISCARD)
  */
 public class ClientConn {
     private static final int READ_BUF_SIZE = 64 * 1024;
@@ -29,8 +28,14 @@ public class ClientConn {
     private final Deque<ByteBuffer> writeQueue = new ArrayDeque<>();
     private final RespReader respReader = new RespReader();
 
-    // The set of channels this connection subscribed to
+    // Pub/Sub subscriptions
     private final Set<String> subscriptions = new HashSet<>();
+
+    // Transaction state (per connection)
+    private boolean inTxn = false;
+    private boolean txnDirty = false; // error occurred while queuing
+    private boolean bypassTxn = false; // true while EXEC is executing queued commands
+    private final List<List<String>> txnQueue = new ArrayList<>();
 
     public ClientConn(SocketChannel ch, Selector selector, PubSubBroker broker) {
         this.ch = ch;
@@ -39,7 +44,7 @@ public class ClientConn {
     }
 
     /**
-     * Handle readable event: read → parse → execute → queue responses
+     * Handle readable event: read → parse → dispatch (or queue) → enqueue replies
      */
     public void handleRead() throws IOException {
         int n = ch.read(readBuf);
@@ -60,9 +65,7 @@ public class ClientConn {
                 break;
             }
             ByteBuffer resp = CommandRegistry.dispatch(argv, this);
-            if (resp != null) {
-                enqueue(resp);
-            }
+            if (resp != null) enqueue(resp);
         }
 
         readBuf.compact();
@@ -82,9 +85,7 @@ public class ClientConn {
         while (!writeQueue.isEmpty()) {
             ByteBuffer buf = writeQueue.peekFirst();
             ch.write(buf);
-            if (buf.hasRemaining()) {
-                break;
-            }
+            if (buf.hasRemaining()) break;
             writeQueue.pollFirst();
         }
         if (writeQueue.isEmpty()) {
@@ -96,7 +97,7 @@ public class ClientConn {
     }
 
     /**
-     * Enqueue a server-pushed message (e.g., Pub/Sub) and ensure OP_WRITE is enabled.
+     * Enqueue a server-pushed message and enable OP_WRITE.
      */
     public void push(ByteBuffer response) {
         enqueue(response);
@@ -117,18 +118,18 @@ public class ClientConn {
         }
     }
 
-    /**
-     * On disconnect, unsubscribe from all channels.
-     */
     public void onDisconnect() {
         if (!subscriptions.isEmpty()) {
             broker.unsubscribeAll(this, subscriptions);
             subscriptions.clear();
         }
+        // drop any transactional state
+        inTxn = false;
+        txnDirty = false;
+        txnQueue.clear();
     }
 
-    // ---- subscription helpers (used by commands/broker) ----
-
+    // ---- subscription helpers ----
     public void addSubscription(String channel) {
         subscriptions.add(channel);
     }
@@ -139,5 +140,48 @@ public class ClientConn {
 
     public int subscriptionCount() {
         return subscriptions.size();
+    }
+
+    // ---- transaction helpers (used by commands/registry) ----
+    public boolean isInTxn() {
+        return inTxn;
+    }
+
+    public void beginTxn() {
+        inTxn = true;
+        txnDirty = false;
+        txnQueue.clear();
+    }
+
+    public void markTxnDirty() {
+        txnDirty = true;
+    }
+
+    public boolean isTxnDirty() {
+        return txnDirty;
+    }
+
+    public void queueTxn(List<String> argv) {
+        txnQueue.add(new ArrayList<>(argv));
+    }
+
+    public List<List<String>> drainTxnQueue() {
+        List<List<String>> q = new ArrayList<>(txnQueue);
+        txnQueue.clear();
+        return q;
+    }
+
+    public void endTxn() {
+        inTxn = false;
+        txnDirty = false;
+        txnQueue.clear();
+    }
+
+    public void setBypassTxn(boolean v) {
+        this.bypassTxn = v;
+    }
+
+    public boolean isBypassTxn() {
+        return bypassTxn;
     }
 }

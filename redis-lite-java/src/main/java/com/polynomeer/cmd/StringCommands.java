@@ -16,6 +16,7 @@ public final class StringCommands {
         reg.put("GET", (argv, ctx) -> get(db, argv));
         reg.put("SET", (argv, ctx) -> set(db, argv));
         reg.put("DEL", (argv, ctx) -> del(db, argv));
+        reg.put("SETNX", (argv, ctx) -> setnx(db, argv));
     }
 
     private static ByteBuffer get(Db db, List<String> argv) {
@@ -67,6 +68,15 @@ public final class StringCommands {
         long expireAt = (pxMs == null) ? -1L : (System.currentTimeMillis() + pxMs);
         db.setString(key, value, expireAt);
         return RespWriter.simpleString("OK");
+    }
+
+    private static ByteBuffer setnx(Db db, List<String> argv) {
+        if (argv.size() != 3) return RespWriter.error("ERR wrong number of arguments for 'SETNX'");
+        String key = argv.get(1);
+        String value = argv.get(2);
+        if (db.exists(key)) return RespWriter.integer(0);
+        db.setString(key, value, -1L);
+        return RespWriter.integer(1);
     }
 
     private static ByteBuffer del(Db db, List<String> argv) {
