@@ -1,22 +1,30 @@
 package com.polynomeer.db;
 
+import com.polynomeer.struct.OpenHashStringMap;
+
 /**
  * Record stored in keyspace.
- * For step-1 we only support STR type; more types can be added later.
+ * Types supported so far: STR, HASH
  */
 final class Record {
-    enum Type {STR}
+    enum Type {STR, HASH}
 
-    Type type = Type.STR;
-    String strVal;
+    Type type;
+    String strVal;                // when type == STR
+    OpenHashStringMap hashVal;    // when type == HASH
 
     // Absolute expiration time in millis since epoch; < 0 means no TTL
     long expireAtMs = -1L;
 
-    // Heap bookkeeping: we avoid strict index tracking; instead we validate on pop.
-    // (If you want O(log n) updates by key, add an index field and a heap map.)
     Record(String strVal, long expireAtMs) {
+        this.type = Type.STR;
         this.strVal = strVal;
+        this.expireAtMs = expireAtMs;
+    }
+
+    Record(OpenHashStringMap map, long expireAtMs) {
+        this.type = Type.HASH;
+        this.hashVal = map;
         this.expireAtMs = expireAtMs;
     }
 

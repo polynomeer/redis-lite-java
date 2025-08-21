@@ -4,7 +4,9 @@ import com.polynomeer.db.Db;
 import com.polynomeer.resp.RespWriter;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Simple command registry/dispatcher.
@@ -20,7 +22,8 @@ public final class CommandRegistry {
         CMDS.clear();
         PingEchoCommands.register(CMDS);
         StringCommands.register(CMDS, db);
-        // add more modules later (hash, pubsub, etc.)
+        HashCommands.register(CMDS, db); // <-- add hash commands
+        // add more modules later (pubsub, lua, etc.)
     }
 
     public static void register(String name, Command c) {
@@ -39,4 +42,3 @@ public final class CommandRegistry {
         return c.execute(argv);
     }
 }
-
