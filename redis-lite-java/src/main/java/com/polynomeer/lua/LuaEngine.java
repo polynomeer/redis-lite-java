@@ -4,7 +4,11 @@ import com.polynomeer.db.Db;
 import com.polynomeer.pubsub.PubSubBroker;
 import com.polynomeer.util.Sha1;
 import org.luaj.vm2.*;
+import org.luaj.vm2.compiler.LuaC;
 import org.luaj.vm2.lib.*;
+
+import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * Lua sandbox powered by luaj:
@@ -66,7 +70,22 @@ public final class LuaEngine {
 
     private LuaFunction compile(String script) {
         Globals g = makeGlobals();
-        return (LuaFunction) g.load(script, "script");
+
+        // Check if the script starts with a slash (assume it is a file path if so)
+        if (script.startsWith("/")) {
+            // Try to load bytecode from the classpath
+            InputStream bytecodeStream = getClass().getResourceAsStream(script);
+            if (bytecodeStream == null) {
+                throw new RuntimeException("Could not find Lua bytecode for script: " + script +
+                        ". Ensure the file exists in 'src/main/resources'" +
+                        " and the path is correctly specified.");
+            }
+            // Load the Lua bytecode
+            return (LuaFunction) g.load(bytecodeStream, "script", "b", g);
+        } else {
+            // Treat the script as raw Lua code if it does not start with a slash
+            return (LuaFunction) g.load(script, "script", g);
+        }
     }
 
     private LuaValue run(LuaFunction fn, java.util.List<String> keys, java.util.List<String> args) {
@@ -95,12 +114,18 @@ public final class LuaEngine {
 
     private Globals makeGlobals() {
         Globals g = new Globals();
-        // Minimal libs only
+
+        // Enable minimal libraries
         g.load(new BaseLib());
-        g.load(new PackageLib()); // needed for chunk loading semantics
+        g.load(new PackageLib());
         g.load(new StringLib());
         g.load(new TableLib());
         g.load(new MathLib());
+
+        // Enable the LuaJ compiler to allow runtime script compilation
+        LoadState.install(g);
+        LuaC.install(g);
+
         return g;
     }
 
